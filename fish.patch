@@ -1,0 +1,147 @@
+diff --git a/ImgBorder.cpp b/ImgBorder.cpp
+index c4a1759..85356e6 100644
+--- a/ImgBorder.cpp
++++ b/ImgBorder.cpp
+@@ -19,6 +19,27 @@
+ 
+ using namespace GL;
+ 
++static SP<ITexture> fishTex(PHLWINDOW pWindow, const std::string &part) {
++  static std::unordered_map<std::string, SP<ITexture>> cache;
++  static const auto DIRS = [] {
++    std::vector<std::filesystem::path> dirs;
++    std::error_code ec;
++    for (const auto &e : std::filesystem::directory_iterator(
++             std::filesystem::path(std::getenv("HOME")) / ".config/hypr/assets/fish", ec))
++      if (e.is_directory())
++        dirs.push_back(e.path());
++    return dirs;
++  }();
++  if (DIRS.empty())
++    return nullptr;
++  const auto &dir = DIRS[((uintptr_t)pWindow.get() >> 4) % DIRS.size()];
++  const auto path = dir / (dir.filename().string() + "-" + part + ".png");
++  auto &tex = cache[path];
++  if (!tex)
++    tex = ImgUtils::load(path);
++  return tex;
++}
++
+ CImgBorder::CImgBorder(PHLWINDOW pWindow) : IHyprWindowDecoration(pWindow) {
+   m_pWindow = pWindow;
+   updateConfig();
+@@ -92,11 +113,13 @@ CBox CImgBorder::getGlobalBoundingBox() {
+                                    ? PWORKSPACE->m_renderOffset->value()
+                                    : Vector2D();
+ 
+-  return box.translate(WORKSPACEOFFSET);
++  // return box.translate(WORKSPACEOFFSET);
++  return box.translate(WORKSPACEOFFSET).expand(250);
+ }
+ 
+ void CImgBorder::drawPass(PHLMONITOR pMonitor, const float &a) {
+   auto box = getGlobalBoundingBox()
++                 .expand(-250)
+                  .translate(m_pWindow->m_floatingOffset - pMonitor->m_position)
+                  .scale(pMonitor->m_scale);
+ 
+@@ -244,6 +267,36 @@ void CImgBorder::drawPass(PHLMONITOR pMonitor, const float &a) {
+                            .discardMode = DISCARD_ALPHA});
+   }
+ 
++  const bool RIGHT = m_pWindow->m_ruleApplicator->m_tagKeeper.isTagged("right");
++  const auto WINDOW_SIZE =
++      m_pWindow->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
++  const auto ENDS = std::min(256., WINDOW_SIZE.y) * pMonitor->m_scale;
++  const auto FINS = std::min(256., WINDOW_SIZE.x) * pMonitor->m_scale;
++  const auto LEFT_X = box.x - ENDS * 250. / 256.;
++  const auto RIGHT_X = box.x + box.width - ENDS * 6. / 256.;
++  const auto MID_X = box.x + (box.width - FINS) / 2.;
++  const auto MID_Y = box.y + (box.height - ENDS) / 2.;
++
++  g_pHyprRenderer->m_renderData.primarySurfaceUVTopLeft = {RIGHT ? 1. : 0., 0.};
++  g_pHyprRenderer->m_renderData.primarySurfaceUVBottomRight = {RIGHT ? 0. : 1., 1.};
++
++  const auto drawPart = [&](const std::string &part, Vector2D pos,
++                            double size) {
++    const CBox box_part = {pos, {size, size}};
++    g_pHyprRenderer->draw({.tex = fishTex(m_pWindow.lock(), part),
++                           .box = box_part,
++                           .a = a,
++                           .damage = box_part,
++                           .blur = shouldBlur(),
++                           .allowCustomUV = true,
++                           .discardMode = DISCARD_ALPHA});
++  };
++
++  drawPart("head", {RIGHT ? RIGHT_X : LEFT_X, MID_Y}, ENDS);
++  drawPart("tail", {RIGHT ? LEFT_X : RIGHT_X, MID_Y}, ENDS);
++  drawPart("top-fins", {MID_X, box.y - FINS * 250. / 256.}, FINS);
++  drawPart("bottom-fins", {MID_X, box.y + box.height - FINS * 6. / 256.}, FINS);
++
+   // Restore previous values
+ 
+   g_pHyprRenderer->m_renderData.useNearestNeighbor = wasUsingNearestNeighbour;
+@@ -258,27 +311,27 @@ void CImgBorder::updateConfig() {
+ 
+   m_isEnabled = true;
+ 
+-  // image
+-  const auto texSrc = g_pGlobalState->config.image->value();
+-  if (texSrc.empty()) {
+-    m_isEnabled = false;
+-    return;
+-  }
+-  wordexp_t p;
+-  wordexp(texSrc.c_str(), &p, 0);
+-  std::string texSrcExpanded = "";
+-  for (size_t i = 0; i < p.we_wordc; i++)
+-    texSrcExpanded.append(p.we_wordv[i]);
+-  wordfree(&p);
+-  if (!std::filesystem::exists(texSrcExpanded)) {
+-    HyprlandAPI::addNotification(
+-        PHANDLE,
+-        std::format("[imgborders] image at \"{}\" doesn't exist",
+-                    texSrcExpanded),
+-        CHyprColor{1.0, 0.1, 0.1, 1.0}, 5000);
+-    m_isEnabled = false;
+-    return;
+-  }
++  // // image
++  // const auto texSrc = g_pGlobalState->config.image->value();
++  // if (texSrc.empty()) {
++  //   m_isEnabled = false;
++  //   return;
++  // }
++  // wordexp_t p;
++  // wordexp(texSrc.c_str(), &p, 0);
++  // std::string texSrcExpanded = "";
++  // for (size_t i = 0; i < p.we_wordc; i++)
++  //   texSrcExpanded.append(p.we_wordv[i]);
++  // wordfree(&p);
++  // if (!std::filesystem::exists(texSrcExpanded)) {
++  //   HyprlandAPI::addNotification(
++  //       PHANDLE,
++  //       std::format("[imgborders] image at \"{}\" doesn't exist",
++  //                   texSrcExpanded),
++  //       CHyprColor{1.0, 0.1, 0.1, 1.0}, 5000);
++  //   m_isEnabled = false;
++  //   return;
++  // }
+ 
+   // sizes
+   const auto sizes = g_pGlobalState->config.sizes->value();
+@@ -324,7 +377,12 @@ void CImgBorder::updateConfig() {
+   m_tex_b = nullptr;
+   m_tex_r = nullptr;
+ 
+-  auto tex = ImgUtils::load(texSrcExpanded);
++  // auto tex = ImgUtils::load(texSrcExpanded);
++  auto tex = fishTex(m_pWindow.lock(), "border");
++  if (!tex) {
++    m_isEnabled = false;
++    return;
++  }
+ 
+   const auto BORDER_LEFT = (float)m_sizes[0];
+   const auto BORDER_RIGHT = (float)m_sizes[1];
